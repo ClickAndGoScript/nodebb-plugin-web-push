@@ -1,23 +1,24 @@
 'use strict';
 
-const nconf = require.main.require('nconf');
-const winston = require.main.require('winston');
 const webPush = require('web-push');
 const validator = require('validator');
 
-const db = require.main.require('./src/database');
-const user = require.main.require('./src/user');
-const meta = require.main.require('./src/meta');
-const utils = require.main.require('./src/utils');
-const translator = require.main.require('./src/translator');
-const notifications = require.main.require('./src/notifications');
+const nconf = nodebb.require('nconf');
+const winston = nodebb.require('winston');
+
+const db = nodebb.require('./src/database');
+const user = nodebb.require('./src/user');
+const meta = nodebb.require('./src/meta');
+const utils = nodebb.require('./src/utils');
+const translator = nodebb.require('./src/translator');
+const notifications = nodebb.require('./src/notifications');
+
+const routeHelpers = nodebb.require('./src/routes/helpers');
 
 const controllers = require('./lib/controllers');
 const subscriptions = require('./lib/subscriptions');
 
-const routeHelpers = require.main.require('./src/routes/helpers');
-
-const plugin = {};
+const plugin = module.exports;
 
 plugin.init = async (params) => {
 	const { router, middleware/* , controllers */ } = params;
@@ -37,9 +38,12 @@ plugin.init = async (params) => {
 };
 
 plugin.appendConfig = async (config) => {
-	const { publicKey } = await meta.settings.get('web-push');
+	const { publicKey, promptEnabled, promptDelay } = await meta.settings.get('web-push');
 	config['web-push'] = {
 		vapidKey: publicKey,
+		// checkbox serialization varies by database and core version
+		promptEnabled: [true, 'true', 'on', 1, '1'].includes(promptEnabled),
+		promptDelay: Math.max(parseInt(promptDelay, 10) || 3, 1),
 	};
 
 	return config;
@@ -103,8 +107,8 @@ plugin.addRoutes = async ({ router, middleware, helpers }) => {
 		const { subscription } = req.body;
 		const payload = await constructPayload({
 			nid: utils.generateUUID(),
-			bodyShort: 'Test notification',
-			bodyLong: 'This is a test message sent from NodeBB',
+			bodyShort: '[[web-push:test.title]]',
+			bodyLong: '[[web-push:test.body]]',
 			path: `/me/web-push`,
 		}, req.uid, userLang);
 		await webPush.sendNotification(subscription, JSON.stringify(payload));
@@ -115,7 +119,7 @@ plugin.addAdminNavigation = (header) => {
 	header.plugins.push({
 		route: '/plugins/web-push',
 		icon: 'fa-tint',
-		name: 'Push Notifications (via Push API)',
+		name: '[[web-push:admin.menu-label]]',
 	});
 
 	return header;
@@ -218,6 +222,7 @@ async function constructPayload(notification, uid, lang) {
 
 	let [title, body] = await translator.translateKeys([bodyShort, bodyLong], lang);
 	([title, body] = [title, body].map(str => validator.unescape(utils.stripHTMLTags(str))));
+	title = `${dir === 'rtl' ? '\u200f' : '\u200e'}${title}`;
 	const tag = mergeId || nid;
 	const url = `${nconf.get('url')}${path}`;
 
@@ -237,14 +242,27 @@ async function constructPayload(notification, uid, lang) {
 		badge = `${nconf.get('url')}${meta.config['brand:maskableIcon'] || '/apple-touch-icon'}`;
 	}
 
+	const actions = await constructActions(lang);
+
 	return {
 		title,
 		body,
 		tag,
 		lang,
 		dir,
-		data: { url, icon, badge },
+		actions,
+		data: { url, icon, badge, nid },
 	};
 }
 
-module.exports = plugin;
+async function constructActions(lang) {
+	const [markRead, viewNotifications] = await translator.translateKeys([
+		'[[web-push:action.mark-read]]',
+		'[[web-push:action.view-notifications]]',
+	], lang);
+
+	return [
+		{ action: 'mark-read', title: markRead },
+		{ action: 'view-notifications', title: viewNotifications },
+	];
+}
