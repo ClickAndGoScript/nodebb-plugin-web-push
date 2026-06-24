@@ -147,9 +147,10 @@ plugin.onNotificationPush = async ({ notification, uidsNotified: uids }) => {
 			try {
 				await webPush.sendNotification(subscription, JSON.stringify(payload));
 			} catch (e) {
-				// Errored — remove subscription from user
 				winston.info(`[plugins/web-push] Push failed: ${e.code}; ${e.message}; statusCode: ${e.statusCode}`);
-				// subscriptions.remove(uid, subscription);
+				if (e.statusCode === 410 || e.statusCode === 404) {
+					subscriptions.remove(uid, subscription);
+				}
 			}
 		});
 	});
@@ -165,15 +166,23 @@ plugin.onNotificationRescind = async ({ nids }) => {
 	const recipients = await db.getSetsMembers(Array.from(tags).map(tag => `web-push:nid:${tag}:uids`));
 
 	Promise.all(Array.from(tags).map(async (tag, idx) => {
-		let subs = await subscriptions.list(recipients[idx]);
-		subs = new Set(...Object.values(Object.fromEntries(subs))); // wtf
+		const subs = await subscriptions.list(recipients[idx]);
+		const sends = [];
+		for (const [uid, userSubs] of subs) {
+			for (const subscription of userSubs) {
+				sends.push({ uid, subscription });
+			}
+		}
 
-		if (subs.size) {
-			await Promise.all(Array.from(subs).map(async (subscription) => {
+		if (sends.length) {
+			await Promise.all(sends.map(async ({ uid, subscription }) => {
 				try {
 					await webPush.sendNotification(subscription, JSON.stringify({ tag }));
 				} catch (e) {
 					winston.info(`[plugins/web-push] Push failed: ${e.code}; ${e.message}; statusCode: ${e.statusCode}`);
+					if (e.statusCode === 410 || e.statusCode === 404) {
+						subscriptions.remove(uid, subscription);
+					}
 				}
 			}));
 		}
@@ -222,7 +231,7 @@ async function constructPayload(notification, uid, lang) {
 
 	let [title, body] = await translator.translateKeys([bodyShort, bodyLong], lang);
 	([title, body] = [title, body].map(str => validator.unescape(utils.stripHTMLTags(str))));
-	title = `${dir === 'rtl' ? '\u200f' : '\u200e'}${title}`;
+	title = `${dir === 'rtl' ? '‏' : '‎'}${title}`;
 	const tag = mergeId || nid;
 	const url = `${nconf.get('url')}${path}`;
 

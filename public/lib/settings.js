@@ -3,6 +3,7 @@
 
 import { post, del } from 'api';
 import { success, warning } from 'alerts';
+import storage from 'storage';
 
 export async function init() {
 	const containerEl = document.querySelector('[component="web-push-form"]');
@@ -73,6 +74,7 @@ export async function init() {
 							});
 
 							await post('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
+							storage.setItem('web-push:subscribed', '1');
 							success('[[web-push:toast.subscribe_success]]');
 
 							let count = parseInt(countEl.textContent, 10);
@@ -89,6 +91,8 @@ export async function init() {
 					} else {
 						await subscription.unsubscribe();
 						await del('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
+						storage.setItem('web-push:prompt-dismissed', '1');
+						storage.removeItem('web-push:subscribed');
 						let count = parseInt(countEl.textContent, 10);
 						countEl.innerText = count - 1;
 						subscription = null;

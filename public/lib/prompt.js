@@ -5,10 +5,11 @@
 
 	const visitsKey = 'web-push:visits';
 	const dismissedKey = 'web-push:prompt-dismissed';
+	const subscribedKey = 'web-push:subscribed';
 
 	hooks.on('action:app.load', async () => {
 		const { promptEnabled, promptDelay, vapidKey } = config['web-push'] || {};
-		if (!promptEnabled || !vapidKey || !app.user.uid || storage.getItem(dismissedKey)) {
+		if (!promptEnabled || !vapidKey || !app.user.uid) {
 			return;
 		}
 
@@ -18,7 +19,27 @@
 		}
 
 		const registration = await navigator.serviceWorker.getRegistration();
-		if (!registration || await registration.pushManager.getSubscription()) {
+		if (!registration) {
+			return;
+		}
+
+		const subscription = await registration.pushManager.getSubscription();
+		if (subscription) {
+			return;
+		}
+
+		// Subscription gone but user was previously subscribed — lost involuntarily.
+		if (storage.getItem(subscribedKey)) {
+			storage.removeItem(subscribedKey);
+			storage.removeItem(dismissedKey);
+			const resubscribed = await tryResubscribe(registration);
+			if (!resubscribed) {
+				showBanner(registration);
+			}
+			return;
+		}
+
+		if (storage.getItem(dismissedKey)) {
 			return;
 		}
 
@@ -30,6 +51,20 @@
 
 		showBanner(registration);
 	});
+
+	async function tryResubscribe(registration) {
+		try {
+			const subscription = await registration.pushManager.subscribe({
+				userVisibleOnly: true,
+				applicationServerKey: urlBase64ToUint8Array(config['web-push'].vapidKey),
+			});
+			await api.post('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
+			storage.setItem(subscribedKey, '1');
+			return true;
+		} catch (err) {
+			return false;
+		}
+	}
 
 	async function showBanner(registration) {
 		const $banner = await app.parseAndTranslate('partials/web-push/prompt', {});
@@ -64,6 +99,7 @@
 				applicationServerKey: urlBase64ToUint8Array(config['web-push'].vapidKey),
 			});
 			await api.post('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
+			storage.setItem(subscribedKey, '1');
 			alerts.success('[[web-push:toast.subscribe_success]]');
 		} catch (err) {
 			alerts.warning('[[web-push:toast.subscribe_failed]]');
