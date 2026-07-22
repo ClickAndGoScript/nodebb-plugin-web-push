@@ -1,6 +1,6 @@
 {
-	"id": "nodebb-plugin-web-push",
-	"url": "https://github.com/NodeBB/nodebb-plugin-web-push",
+	"id": "nodebb-plugin-web-push-1",
+	"url": "https://github.com/ClickAndGoScript/nodebb-plugin-web-push",
 	"library": "./library.js",
 	"hooks": [
 		{ "hook": "static:app.load", "method": "init" },

@@ -1,11 +1,11 @@
 {
-  "name": "nodebb-plugin-web-push",
+  "name": "nodebb-plugin-web-push-1",
   "version": "0.9.2",
   "description": "A plugin for adding native push notifications to NodeBB via the Web Push API.",
   "main": "library.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nodebb/nodebb-plugin-web-push"
+    "url": "https://github.com/ClickAndGoScript/nodebb-plugin-web-push"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -31,7 +31,7 @@
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/nodebb/nodebb-plugin-web-push/issues"
+    "url": "https://github.com/ClickAndGoScript/nodebb-plugin-web-push/issues"
   },
   "readmeFilename": "README.md",
   "nbbpm": {
