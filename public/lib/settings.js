@@ -34,7 +34,7 @@ export async function init() {
 	containerEl.addEventListener('click', async (e) => {
 		const subselector = e.target.closest('[data-action]');
 		if (subselector) {
-			const action = e.target.getAttribute('data-action');
+			const action = subselector.getAttribute('data-action');
 
 			switch (action) {
 				case 'test': {
@@ -47,8 +47,14 @@ export async function init() {
 					break;
 				}
 
+				case 'remove': {
+					const endpoint = subselector.getAttribute('data-endpoint');
+					await del('/plugins/web-push/subscription', { subscription: { endpoint } });
+					ajaxify.refresh();
+					break;
+				}
+
 				case 'toggle': {
-					const countEl = document.querySelector('#deviceCount strong');
 					if (!subscription) {
 						if (Notification.permission === 'denied') {
 							subselector.checked = false;
@@ -76,9 +82,7 @@ export async function init() {
 							await post('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
 							storage.setItem('web-push:subscribed', '1');
 							success('[[web-push:toast.subscribe_success]]');
-
-							let count = parseInt(countEl.textContent, 10);
-							countEl.innerText = count + 1;
+							ajaxify.refresh();
 						} catch (err) {
 							subselector.checked = false;
 							const stale = await registration.pushManager.getSubscription();
@@ -93,9 +97,8 @@ export async function init() {
 						await del('/plugins/web-push/subscription', { subscription: subscription.toJSON() });
 						storage.setItem('web-push:prompt-dismissed', '1');
 						storage.removeItem('web-push:subscribed');
-						let count = parseInt(countEl.textContent, 10);
-						countEl.innerText = count - 1;
 						subscription = null;
+						ajaxify.refresh();
 					}
 
 					break;
@@ -105,8 +108,12 @@ export async function init() {
 	});
 
 	const enabledEl = document.getElementById('enabled');
-	if (subscription) {
+	const devices = ajaxify.data.devices || [];
+	if (subscription && devices.some(d => d.endpoint === subscription.endpoint)) {
 		enabledEl.checked = true;
+	} else if (subscription) {
+		await subscription.unsubscribe();
+		subscription = null;
 	}
 
 	const state = await registration.pushManager.permissionState({

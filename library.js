@@ -1,7 +1,6 @@
 'use strict';
 
 const webPush = require('web-push');
-const validator = require('validator');
 
 const nconf = nodebb.require('nconf');
 const winston = nodebb.require('winston');
@@ -84,7 +83,13 @@ plugin.addRoutes = async ({ router, middleware, helpers }) => {
 		}
 
 		const { subscription } = req.body;
-		await subscriptions.add(req.uid, subscription);
+		const device = req.useragent ? {
+			browser: req.useragent.browser,
+			version: req.useragent.version,
+			os: req.useragent.os,
+			platform: req.useragent.platform,
+		} : undefined;
+		await subscriptions.add(req.uid, subscription, device);
 		helpers.formatApiResponse(200, res);
 	});
 
@@ -105,6 +110,23 @@ plugin.addRoutes = async ({ router, middleware, helpers }) => {
 
 		const { userLang } = await user.getSettings(req.uid);
 		const { subscription } = req.body;
+
+		// Resolve the requested endpoint against the user's saved subscriptions
+		// to prevent server-side request forgery via arbitrary endpoint injection.
+		const endpoint = subscription?.endpoint?.trim();
+		if (!endpoint) {
+			return helpers.formatApiResponse(400, res);
+		}
+
+		const [owned, stored] = await Promise.all([
+			db.isSortedSetMember(`uid:${req.uid}:web-push:subscriptions`, endpoint),
+			db.getObject(`web-push:subscriptions:${endpoint}`),
+		]);
+
+		if (!owned || !stored) {
+			return helpers.formatApiResponse(404, res);
+		}
+
 		const payload = await constructPayload({
 			nid: utils.generateUUID(),
 			bodyShort: '[[web-push:test.title]]',
@@ -148,8 +170,8 @@ plugin.onNotificationPush = async ({ notification, uidsNotified: uids }) => {
 				await webPush.sendNotification(subscription, JSON.stringify(payload));
 			} catch (e) {
 				winston.info(`[plugins/web-push] Push failed: ${e.code}; ${e.message}; statusCode: ${e.statusCode}`);
-				if (e.statusCode === 410 || e.statusCode === 404) {
-					subscriptions.remove(uid, subscription);
+				if (e.statusCode === 410) {
+					await subscriptions.remove(uid, subscription);
 				}
 			}
 		});
@@ -229,9 +251,9 @@ async function constructPayload(notification, uid, lang) {
 
 	const { nid, mergeId, bodyShort, bodyLong, path } = notification;
 
-	let [title, body] = await translator.translateKeys([bodyShort, bodyLong], lang);
-	([title, body] = [title, body].map(str => validator.unescape(utils.stripHTMLTags(str))));
-	title = `${dir === 'rtl' ? '‏' : '‎'}${title}`;
+	let [title, body] = await translator.translateKeys([bodyShort || '', bodyLong || ''], lang);
+	([title, body] = [title, body].map(str => utils.stripHTMLTags(utils.decodeHTMLEntities(str))));
+	title = `${dir === 'rtl' ? '\u200f' : '\u200e'}${title}`;
 	const tag = mergeId || nid;
 	const url = `${nconf.get('url')}${path}`;
 
