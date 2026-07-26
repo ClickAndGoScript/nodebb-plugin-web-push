@@ -50,7 +50,7 @@ plugin.appendConfig = async (config) => {
 
 plugin.registerServiceWorker = async (data) => {
 	const { scripts } = data;
-	scripts.add(`nodebb-plugin-web-push/static/web-push.js`);
+	scripts.add(`nodebb-plugin-web-push-1/static/web-push.js`);
 	return data;
 };
 
