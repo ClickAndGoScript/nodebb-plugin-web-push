@@ -17,8 +17,44 @@ const routeHelpers = nodebb.require('./src/routes/helpers');
 
 const controllers = require('./lib/controllers');
 const subscriptions = require('./lib/subscriptions');
+const unread = require('./lib/unread');
 
 const plugin = module.exports;
+
+// Apple's push service (Safari, iOS/iPadOS home-screen apps) only accepts pushes that display a
+// notification. Pushes that do not (like the "close this notification" push of .rescind) count
+// against the site, and after a few of them the subscription is revoked: the toggle on the
+// device turns itself off. .rescind therefore skips these endpoints.
+// iOS/iPadOS also ignore Notification#close() and the `tag` of a new notification (tested on
+// iOS 27.2: getNotifications() lists them, close() resolves, but they stay in Notification Center,
+// and a notification with the same tag is added instead of replacing the old one), so a site
+// cannot clear notifications there at all. What these devices do support is the app icon badge:
+// every push carries the unread count, and the service worker keeps the badge in sync.
+const SILENT_PUSH_UNSUPPORTED = new Set(['web.push.apple.com']);
+
+// Push services reject payloads over 4096 bytes (encrypted); keep ours well below that.
+const MAX_PAYLOAD_BYTES = 3500;
+
+function endpointHost(subscription) {
+	try {
+		return new URL(subscription.endpoint).host;
+	} catch (e) {
+		return '';
+	}
+}
+
+// One place for every failed send: log it with the push service and its answer, and drop the
+// subscription when it can never work again (expired / unsubscribed / unusable keys).
+async function onSendError(uid, subscription, e) {
+	const body = typeof e.body === 'string' ? e.body.replace(/\s+/g, ' ').slice(0, 200) : '';
+	const gone = e.statusCode === 404 || e.statusCode === 410 ||
+		e.code === 'ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY' || /public key|auth secret|p256dh/i.test(e.message || '');
+	winston.info(`[plugins/web-push] Push failed (uid ${uid}, ${endpointHost(subscription) || 'invalid endpoint'}): ` +
+		`${e.code}; ${e.message}; statusCode: ${e.statusCode}${body ? `; ${body}` : ''}${gone ? ' – subscription removed' : ''}`);
+	if (gone && uid) {
+		await subscriptions.remove(uid, subscription).catch(err => winston.warn(`[plugins/web-push] ${err.message}`));
+	}
+}
 
 plugin.init = async (params) => {
 	const { router, middleware/* , controllers */ } = params;
@@ -51,7 +87,12 @@ plugin.appendConfig = async (config) => {
 
 plugin.registerServiceWorker = async (data) => {
 	const { scripts } = data;
-	scripts.add(`nodebb-plugin-web-push-1/static/web-push.js`);
+	// The static file is served with a long max-age and imported scripts are fetched through the
+	// HTTP cache, so without a cache buster the generated service-worker.js never changes and
+	// browsers keep running the old code after the plugin is upgraded. The buster changes on every
+	// build, which makes browsers install the updated service worker.
+	const buster = meta.config['cache-buster'];
+	scripts.add(`nodebb-plugin-web-push-1/static/web-push.js${buster ? `?${buster}` : ''}`);
 	return data;
 };
 
@@ -104,6 +145,19 @@ plugin.addRoutes = async ({ router, middleware, helpers }) => {
 		helpers.formatApiResponse(200, res);
 	});
 
+	// Used by the service worker to close notifications that were already read elsewhere
+	routeHelpers.setupApiRoute(router, 'get', '/web-push/unread-tags', middlewares, async (req, res) => {
+		if (!req.uid) {
+			return helpers.notAllowed(req, res);
+		}
+
+		const [tags, count] = await Promise.all([
+			unread.getTags(req.uid),
+			user.notifications.getUnreadCount(req.uid),
+		]);
+		helpers.formatApiResponse(200, res, { tags, count });
+	});
+
 	routeHelpers.setupApiRoute(router, 'post', '/web-push/test', middlewares, async (req, res) => {
 		if (!req.uid) {
 			return helpers.notAllowed(req, res);
@@ -141,7 +195,12 @@ plugin.addRoutes = async ({ router, middleware, helpers }) => {
 			return helpers.formatApiResponse(400, res);
 		}
 
-		await webPush.sendNotification(stored, JSON.stringify(payload));
+		try {
+			await webPush.sendNotification(stored, JSON.stringify(payload));
+		} catch (e) {
+			await onSendError(req.uid, stored, e);
+			return helpers.formatApiResponse(400, res, new Error('[[web-push:toast.test_unavailable]]'));
+		}
 		helpers.formatApiResponse(200, res);
 	});
 };
@@ -167,7 +226,13 @@ plugin.onNotificationPush = async ({ notification, uidsNotified: uids }) => {
 	db.pexpire(refKey, 1000 * 60 * 60 * 48); // only track last 48 hours
 
 	let payloads = await Promise.all(uids.map(async (uid, idx) => {
-		const payload = await constructPayload(notification, uid, userSettings[idx].userLang);
+		const [payload, unreadCount] = await Promise.all([
+			constructPayload(notification, uid, userSettings[idx].userLang),
+			user.notifications.getUnreadCount(uid),
+		]);
+		// The number on the app icon. iOS/iPadOS cannot remove notifications that are already shown
+		// (see SILENT_PUSH_UNSUPPORTED), so the icon badge is what tells how many are still unread.
+		payload.unread = unreadCount;
 		return [uid, payload];
 	}));
 	payloads = new Map(payloads);
@@ -178,10 +243,7 @@ plugin.onNotificationPush = async ({ notification, uidsNotified: uids }) => {
 			try {
 				await webPush.sendNotification(subscription, JSON.stringify(payload));
 			} catch (e) {
-				winston.info(`[plugins/web-push] Push failed: ${e.code}; ${e.message}; statusCode: ${e.statusCode}`);
-				if (e.statusCode === 410) {
-					await subscriptions.remove(uid, subscription);
-				}
+				await onSendError(uid, subscription, e);
 			}
 		});
 	});
@@ -192,31 +254,30 @@ plugin.onNotificationRescind = async ({ nids }) => {
 	let mergeIds = await db.getObjectsFields(notificationKeys, ['mergeId']);
 	mergeIds = mergeIds.map(o => o.mergeId);
 
-	// Favour mergeIds over nids, then eliminate dupes
-	const tags = new Set(notificationKeys.map((key, i) => mergeIds[i] || key));
+	// Favour mergeIds over nids, then eliminate dupes. The fallback must be the bare nid
+	// (not the `notifications:<nid>` key), as that is the tag used in the push payload and
+	// in the `web-push:nid:<tag>:uids` recipient set.
+	const tags = new Set(nids.map((nid, i) => mergeIds[i] || nid));
 	const recipients = await db.getSetsMembers(Array.from(tags).map(tag => `web-push:nid:${tag}:uids`));
 
 	Promise.all(Array.from(tags).map(async (tag, idx) => {
-		const subs = await subscriptions.list(recipients[idx]);
-		const sends = [];
-		for (const [uid, userSubs] of subs) {
-			for (const subscription of userSubs) {
-				sends.push({ uid, subscription });
-			}
-		}
-
-		if (sends.length) {
-			await Promise.all(sends.map(async ({ uid, subscription }) => {
-				try {
-					await webPush.sendNotification(subscription, JSON.stringify({ tag }));
-				} catch (e) {
-					winston.info(`[plugins/web-push] Push failed: ${e.code}; ${e.message}; statusCode: ${e.statusCode}`);
-					if (e.statusCode === 410 || e.statusCode === 404) {
-						subscriptions.remove(uid, subscription);
-					}
+		const subsByUid = await subscriptions.list(recipients[idx]);
+		const targets = [];
+		subsByUid.forEach((set, uid) => {
+			set.forEach((subscription) => {
+				if (!SILENT_PUSH_UNSUPPORTED.has(endpointHost(subscription))) {
+					targets.push([uid, subscription]);
 				}
-			}));
-		}
+			});
+		});
+
+		await Promise.all(targets.map(async ([uid, subscription]) => {
+			try {
+				await webPush.sendNotification(subscription, JSON.stringify({ tag }));
+			} catch (e) {
+				await onSendError(uid, subscription, e);
+			}
+		}));
 	})).catch(err => winston.error(err.stack));
 };
 
@@ -254,7 +315,16 @@ async function constructPayload(notification, uid, lang) {
 		const related = await notifications.findRelated([notification.mergeId], `uid:${uid}:notifications:unread`);
 		const merged = await notifications.getMultiple(related).then(notifications.merge);
 		if (merged.length) {
-			notification = merged.pop();
+			// Use the merged title (e.g. "3 new messages from …"), but keep the body and link of
+			// the notification that triggered this push. The merged object is built from the first
+			// notification in the set, so its bodyLong/path would otherwise always show the
+			// first message instead of the newest one.
+			const { bodyLong, path } = notification;
+			notification = {
+				...merged.pop(),
+				...(bodyLong && { bodyLong }),
+				...(path && { path }),
+			};
 		}
 	}
 
@@ -281,10 +351,9 @@ async function constructPayload(notification, uid, lang) {
 	if (!badge) { // badge fallbacks
 		badge = `${nconf.get('url')}${meta.config['brand:maskableIcon'] || '/apple-touch-icon'}`;
 	}
-
 	const actions = await constructActions(lang);
 
-	return {
+	const payload = {
 		title,
 		body,
 		tag,
@@ -293,6 +362,19 @@ async function constructPayload(notification, uid, lang) {
 		actions,
 		data: { url, icon, badge, nid },
 	};
+
+	// maxLength counts characters, but push services limit bytes, and non-Latin text takes two or
+	// more bytes per character (a long Hebrew post failed with 413). Shorten the body, then the
+	// title, until the whole payload fits.
+	const size = () => Buffer.byteLength(JSON.stringify(payload));
+	while (size() > MAX_PAYLOAD_BYTES && payload.body.length > 1) {
+		const cut = Math.max(1, Math.ceil((size() - MAX_PAYLOAD_BYTES) / 2) + 1);
+		payload.body = `${payload.body.slice(0, Math.max(0, payload.body.length - cut - 1))}…`;
+	}
+	while (size() > MAX_PAYLOAD_BYTES && payload.title.length > 1) {
+		payload.title = `${payload.title.slice(0, Math.max(0, payload.title.length - 50))}…`;
+	}
+	return payload;
 }
 
 async function constructActions(lang) {

@@ -5,6 +5,12 @@
 	"profile.devices": "目前正在通知 <strong>%1</strong> 台设备。",
 	"profile.permissionBlocked": "您的设备目前不允许接收来自本网站的通知。请授予通知权限以继续。",
 	"profile.send-test": "发送测试通知",
+	"profile.device": "设备",
+	"profile.browser": "浏览器",
+	"profile.os": "操作系统",
+	"profile.no-devices": "没有已注册的设备。",
+	"profile.remove": "移除",
+	"profile.unknown": "未知",
 
 	"toast.test_success": "测试通知已发送。",
 	"toast.subscribe_success": "已在此设备上启用推送通知。",

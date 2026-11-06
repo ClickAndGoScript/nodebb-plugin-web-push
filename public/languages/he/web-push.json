@@ -5,6 +5,12 @@
 	"profile.devices": "כרגע נשלחות התראות ל־ <strong>%1</strong> מכשיר(ים).",
 	"profile.permissionBlocked": "המכשיר שלך אינו מאפשר כרגע לקבל התראות מאתר זה. יש לאשר את הרשאת ההתראות כדי להמשיך.",
 	"profile.send-test": "שליחת התראת בדיקה",
+	"profile.device": "מכשיר",
+	"profile.browser": "דפדפן",
+	"profile.os": "מערכת הפעלה",
+	"profile.no-devices": "לא רשומים מכשירים.",
+	"profile.remove": "הסרה",
+	"profile.unknown": "לא ידוע",
 
 	"toast.test_success": "התראת הבדיקה נשלחה.",
 	"toast.subscribe_success": "התראות דחיפה הופעלו במכשיר זה.",

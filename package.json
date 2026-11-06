@@ -1,6 +1,6 @@
 {
   "name": "nodebb-plugin-web-push-1",
-  "version": "0.9.6",
+  "version": "0.10.1",
   "description": "A plugin for adding native push notifications to NodeBB via the Web Push API.",
   "main": "library.js",
   "repository": {
@@ -38,12 +38,12 @@
     "compatibility": "^4.15.0"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.2.2",
-    "@commitlint/config-angular": "21.2.2",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-angular": "21.2.4",
     "@eslint/js": "^10.0.1",
     "eslint-config-nodebb": "^2.0.2",
     "husky": "9.1.7",
-    "lint-staged": "17.5.1"
+    "lint-staged": "17.6.0"
   },
   "dependencies": {
     "validator": "^13.12.0",

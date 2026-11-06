@@ -24,6 +24,7 @@ const db = nodebb.require('./test/mocks/databasemock');
 const user = nodebb.require('./src/user');
 
 const Subscriptions = require('../lib/subscriptions');
+const Unread = require('../lib/unread');
 
 describe('nodebb-plugin-web-push', () => {
 	let uid1, uid2;
@@ -103,6 +104,37 @@ describe('nodebb-plugin-web-push', () => {
 			assert.equal(entry.browser, 'chrome');
 			assert.equal(entry.uid, uid1);
 		});
+
+		it('should allow an existing endpoint to re-register at the device limit', async () => {
+			const endpoint = 'https://fcm.googleapis.com/fcm/send/test-device-1';
+			const fillerEndpoints = Array.from(
+				{ length: 9 },
+				(_, index) => `https://fcm.googleapis.com/fcm/send/filler-${index}`
+			);
+			await db.sortedSetAdd(
+				`uid:${uid1}:web-push:subscriptions`,
+				fillerEndpoints.map((_, index) => Date.now() + index),
+				fillerEndpoints
+			);
+
+			await Subscriptions.add(uid1, {
+				endpoint,
+				keys: { auth: 'renewed-auth', p256dh: 'renewed-p256dh' },
+			});
+
+			const entry = await db.getObject(`web-push:subscriptions:${endpoint}`);
+			assert.equal(entry.keys.auth, 'renewed-auth');
+		});
+
+		it('should reject a new endpoint at the device limit', async () => {
+			await assert.rejects(
+				Subscriptions.add(uid1, {
+					endpoint: 'https://fcm.googleapis.com/fcm/send/device-over-limit',
+					keys: { auth: 'auth', p256dh: 'p256dh' },
+				}),
+				{ message: '[[error:too-many-subscriptions]]' }
+			);
+		});
 	});
 
 	describe('Subscriptions.remove', () => {
@@ -166,6 +198,25 @@ describe('nodebb-plugin-web-push', () => {
 			const uid2Subs = result.get(uid2);
 			const hasDeviceB = Array.from(uid2Subs).some(s => s.endpoint === 'https://fcm.googleapis.com/fcm/send/test-device-b');
 			assert.equal(hasDeviceB, false, 'uid2\'s removed subscription should not appear');
+		});
+	});
+	describe('Unread.getTags', () => {
+		it('should return an empty list for guests and users without unread notifications', async () => {
+			assert.deepStrictEqual(await Unread.getTags(0), []);
+			assert.deepStrictEqual(await Unread.getTags(uid2), []);
+		});
+
+		it('should return the push tag (mergeId, or nid) of each unread notification, without duplicates', async () => {
+			const now = Date.now();
+			await db.setObject('notifications:web-push-test:plain', { nid: 'web-push-test:plain' });
+			await db.setObject('notifications:web-push-test:merged:1', { nid: 'web-push-test:merged:1', mergeId: 'web-push-test:merge' });
+			await db.setObject('notifications:web-push-test:merged:2', { nid: 'web-push-test:merged:2', mergeId: 'web-push-test:merge' });
+			await db.sortedSetAdd(`uid:${uid1}:notifications:unread`, [now, now + 1, now + 2], [
+				'web-push-test:plain', 'web-push-test:merged:1', 'web-push-test:merged:2',
+			]);
+
+			const tags = await Unread.getTags(uid1);
+			assert.deepStrictEqual(tags.sort(), ['web-push-test:merge', 'web-push-test:plain']);
 		});
 	});
 });
